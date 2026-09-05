@@ -1,5 +1,6 @@
-from flask import Flask
+               from flask import Flask
 from threading import Thread
+import sqlite3
 
 # --- Render 24/7 Keep Alive Server ---
 app = Flask('')
@@ -23,7 +24,7 @@ import base64
 import hmac
 import hashlib
 import struct
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -45,19 +46,103 @@ MIN_REFERRED_OTPS = 50    # যাকে রেফার করা হয়েছ�
 MIN_VALID_REFERS = 3      # উইথড্র করার জন্য মিনিমাম সফল রেফার
 # ===============================================
 
-USER_WALLETS = {}
-VERIFIED_USERS = set()  # ভেরিফাই করা ইউজারদের মনে রাখার জন্য মেমোরি সেট
+# --- SQLite Database Setup ---
+def init_db():
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0.0,
+            success_otps INTEGER DEFAULT 0,
+            referred_by INTEGER,
+            valid_refers INTEGER DEFAULT 0,
+            is_verified INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS claimed_refers (
+            referrer_id INTEGER,
+            referred_id INTEGER,
+            PRIMARY KEY (referrer_id, referred_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 def get_user_data(user_id):
-    if user_id not in USER_WALLETS:
-        USER_WALLETS[user_id] = {
-            "balance": 0.0,
-            "success_otps": 0,
-            "referred_by": None,
-            "valid_refers": 0,
-            "claimed_refers": set()
-        }
-    return USER_WALLETS[user_id]
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT balance, success_otps, referred_by, valid_refers, is_verified FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        cursor.execute('INSERT INTO users (user_id) VALUES (?)', (user_id,))
+        conn.commit()
+        balance, success_otps, referred_by, valid_refers, is_verified = 0.0, 0, None, 0, 0
+    else:
+        balance, success_otps, referred_by, valid_refers, is_verified = row
+        
+    conn.close()
+    return {
+        "balance": balance,
+        "success_otps": success_otps,
+        "referred_by": referred_by,
+        "valid_refers": valid_refers,
+        "is_verified": is_verified
+    }
+
+def update_user_data(user_id, balance=None, success_otps=None, referred_by=None, valid_refers=None, is_verified=None):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    
+    current = get_user_data(user_id)
+    bal = balance if balance is not None else current["balance"]
+    s_otp = success_otps if success_otps is not None else current["success_otps"]
+    ref_by = referred_by if referred_by is not None else current["referred_by"]
+    v_ref = valid_refers if valid_refers is not None else current["valid_refers"]
+    verif = is_verified if is_verified is not None else current["is_verified"]
+    
+    cursor.execute('''
+        UPDATE users SET balance = ?, success_otps = ?, referred_by = ?, valid_refers = ?, is_verified = ?
+        WHERE user_id = ?
+    ''', (bal, s_otp, ref_by, v_ref, verif, user_id))
+    conn.commit()
+    conn.close()
+
+def has_claimed_refer(referrer_id, referred_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM claimed_refers WHERE referrer_id = ? AND referred_id = ?', (referrer_id, referred_id))
+    res = cursor.fetchone()
+    conn.close()
+    return res is not None
+
+def add_claimed_refer(referrer_id, referred_id):
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO claimed_refers (referrer_id, referred_id) VALUES (?, ?)', (referrer_id, referred_id))
+    conn.commit()
+    conn.close()
+
+def get_total_users_count():
+    conn = sqlite3.connect('bot_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+# স্থায়ী কিবোর্ড লেআউট (যা নিচে বা মেনু আইকনে থাকবে)
+def get_reply_keyboard():
+    keyboard = [
+        [KeyboardButton("🔢 Get Number"), KeyboardButton("👛 Wallet")],
+        [KeyboardButton("👥 Refer & Earn"), KeyboardButton("🚦 Live Traffic")],
+        [KeyboardButton("🔐 2FA Code Generator"), KeyboardButton("💬 Online Support")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # 2FA (TOTP) জেনারেটর
 def generate_totp(secret):
@@ -78,7 +163,7 @@ def generate_totp(secret):
     except Exception:
         return None
 
-# মূল মেনু
+# মূল মেনু (ইনলাইন বাটন সহ)
 async def show_main_menu(update_or_query, context, is_edit=False):
     user_id = update_or_query.from_user.id if hasattr(update_or_query, 'from_user') else update_or_query.effective_user.id
     
@@ -94,13 +179,15 @@ async def show_main_menu(update_or_query, context, is_edit=False):
 
     text = "👋 **আমাদের নাম্বার বটে স্বাগতম!**\n\nনিচের মেনু থেকে আপনার প্রয়োজনীয় সার্ভিসটি বেছে নিন:"
     
+    reply_kb = get_reply_keyboard()
+
     if is_edit and hasattr(update_or_query, 'edit_message_text'):
         await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     else:
-        if hasattr(update_or_query, 'message') and update_or_query.message:
-            await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-        else:
-            await update_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        target = update_or_query.message if hasattr(update_or_query, 'message') and update_or_query.message else update_or_query
+        await target.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        # সাথে নিচের পার্মানেন্ট কিবোর্ডটি পাঠিয়ে দেওয়া
+        await target.reply_text("🔽 নিচ থেকেও শর্টকাট মেনু ব্যবহার করতে পারেন:", reply_markup=reply_kb)
 
 # /start কম্যান্ড
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,16 +199,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             referrer_id = int(context.args[0])
             if referrer_id != user_id:
-                user_data["referred_by"] = referrer_id
+                update_user_data(user_id, referred_by=referrer_id)
         except ValueError:
             pass
 
-    # ইউজার ইতিমধ্যে ভেরিফাই করা থাকলে সরাসরি মেইন মেনু দেখাবে
-    if user_id in VERIFIED_USERS:
+    if user_data["is_verified"] == 1:
         await show_main_menu(update, context, is_edit=False)
         return
 
-    # প্রথমবার হলে চ্যানেল সাবস্ক্রাইব ও ভেরিফাই অপشن দেখাবে
     buttons = [
         [InlineKeyboardButton("📢 Telegram Channel", url=TELEGRAM_CHANNEL)],
         [InlineKeyboardButton("🤖 Telegram OTP Channel", url=OTP_BOT_LINK)],
@@ -135,7 +220,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# বাটন হ্যান্ডলার
+# বাটন হ্যান্ডলার (ইনলাইন কলব্যাক)
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -144,7 +229,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_wallet = get_user_data(user_id)
 
     if data == "check_join":
-        VERIFIED_USERS.add(user_id)  # ইউজারের আইডি ভেরিফাইড লিস্টে সেভ হলো
+        update_user_data(user_id, is_verified=1)
         await query.answer("✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
         await show_main_menu(query, context, is_edit=True)
 
@@ -161,16 +246,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service_name = data.replace("buy_", "").upper()
         demo_number = "+8801700000000"
         
-        user_wallet["success_otps"] += 1
-        user_wallet["balance"] += OTP_RATE
+        new_success_otps = user_wallet["success_otps"] + 1
+        new_balance = user_wallet["balance"] + OTP_RATE
+        update_user_data(user_id, balance=new_balance, success_otps=new_success_otps)
+        user_wallet = get_user_data(user_id)
 
         referrer_id = user_wallet.get("referred_by")
         if referrer_id and user_wallet["success_otps"] >= MIN_REFERRED_OTPS:
-            referrer_wallet = get_user_data(referrer_id)
-            if user_id not in referrer_wallet["claimed_refers"]:
-                referrer_wallet["claimed_refers"].add(user_id)
-                referrer_wallet["valid_refers"] += 1
-                referrer_wallet["balance"] += REFERRAL_BONUS
+            if not has_claimed_refer(referrer_id, user_id):
+                add_claimed_refer(referrer_id, user_id)
+                referrer_wallet = get_user_data(referrer_id)
+                new_ref_count = referrer_wallet["valid_refers"] + 1
+                new_ref_balance = referrer_wallet["balance"] + REFERRAL_BONUS
+                update_user_data(referrer_id, balance=new_ref_balance, valid_refers=new_ref_count)
                 
                 try:
                     await context.bot.send_message(
@@ -306,7 +394,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_stats":
         if user_id != ADMIN_ID: return
-        total_users = len(USER_WALLETS)
+        total_users = get_total_users_count()
         back_btn = [[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="admin_panel")]]
         await query.edit_message_text(f"📊 **ইউজার স্ট্যাটিস্টিক্স:**\n\n• মোট রেজিস্টার্ড ইউজার: {total_users} জন", reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
 
@@ -319,78 +407,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await show_main_menu(query, context, is_edit=True)
 
-# মেসেজ হ্যান্ডলার
+# টেক্সট মেসেজ এবং নিচে থাকা কিবোর্ড বাটনগুলোর হ্যান্ডলার
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
+    text = update.message.text.strip()
     user_id = update.effective_user.id
     user_wallet = get_user_data(user_id)
-    state = context.user_data.get('state')
-
-    if state == "waiting_for_2fa":
-        current_code = generate_totp(user_text)
-        if current_code:
-            await update.message.reply_text(f"✅ **আপনার 2FA কোড:** `{current_code}`", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ ইনভ্যালিড 2FA কী!")
-        context.user_data['state'] = None
+    
+    # নিচ থেকে কিবোর্ডের কোনো বাটন চাপলে সেটার কাজ হ্যান্ডেল করা
+    if text == "🔢 Get Number":
+        services = [
+            [InlineKeyboardButton("📘 Facebook", callback_data="buy_fb"), InlineKeyboardButton("🟢 WhatsApp", callback_data="buy_wa")],
+            [InlineKeyboardButton("✈️ Telegram", callback_data="buy_tg"), InlineKeyboardButton("🟡 IMO", callback_data="buy_imo")],
+            [InlineKeyboardButton("📸 Instagram", callback_data="buy_insta")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="back_main")]
+        ]
+        await update.message.reply_text("📱 **যে সার্ভিসের নাম্বার দরকার বেছে নিন:**", reply_markup=InlineKeyboardMarkup(services), parse_mode="Markdown")
         return
-
-    elif state == "waiting_for_search_range":
-        await update.message.reply_text(f"🔍 **{user_text}** রেঞ্জের জন্য নাম্বার খোঁজা হচ্ছে...")
-        context.user_data['state'] = None
-        return
-
-    elif state == "waiting_for_withdraw_acc":
-        context.user_data['withdraw_acc'] = user_text
-        context.user_data['state'] = "waiting_for_withdraw_amount"
-        await update.message.reply_text(
-            f"✅ **পেমেন্ট অ্যাড্রেস রিসিভ হয়েছে!**\n\n"
-            f"💰 ওয়ালেট ব্যালেন্স: **৳{user_wallet['balance']:.2f}**\n"
-            f"এখন আপনি কত টাকা উইথড্র করতে চান তা লিখে পাঠান:",
-            parse_mode="Markdown"
-        )
-        return
-
-    elif state == "waiting_for_withdraw_amount":
-        try:
-            amount = float(user_text)
-            if amount < MIN_WITHDRAW:
-                await update.message.reply_text(f"❌ সর্বনিম্ন উইথড্র পরিমাণ **৳{MIN_WITHDRAW:.2f}**!")
-                return
-            if amount > user_wallet['balance']:
-                await update.message.reply_text(f"❌ পর্যাপ্ত ব্যালেন্স নেই!")
-                return
-            
-            method = context.user_data.get('withdraw_method')
-            acc = context.user_data.get('withdraw_acc')
-            
-            user_wallet['balance'] -= amount
-            await update.message.reply_text("🎉 **উইথড্র রিকোয়েস্ট সফল হয়েছে!**", parse_mode="Markdown")
-            
-            admin_msg = f"🔔 **নতুন উইথড্র!**\n\n👤 ইউজার: `{user_id}`\n💳 মেথড: {method}\n📌 অ্যাকাউন্ট: `{acc}`\n💰 পরিমাণ: ৳{amount:.2f}"
-            try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="Markdown")
-            except Exception:
-                pass
-
-        except ValueError:
-            await update.message.reply_text("❌ দয়া করে সংখ্যা লিখে পাঠান!")
-            return
-
-        context.user_data.clear()
-        return
-
-# থ্রি-ডট বোতাম সেটআপ
-async def post_init(application):
-    await application.bot.set_my_commands([
-        BotCommand("start", "🚀 Start / Restart Bot")
-    ])
-
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot is running perfectly now...")
-    app.run_polling()
         
+    elif text == "👛 Wallet":
+        msg = (
+            f"👛 **আপনার ওয়ালেট বিবরণী:**\n\n"
+            f"💰 মোট জমানো টাকা: **৳{user_wallet['balance']:.2f}**\n"
+            f"📥 আপনার মোট সফল ওটিপি: **{user_wallet['success_otps']} টি**\n"
+            f"👥 আপনার সফল রেফারেল: **{user_wallet['valid_refers']} / {MIN_VALID_REFERS} জন**\n\n"
+            f"📌 **উইথড্রল শর্তাবলী:**\n"
+            f"• মিনিমাম ব্যালেন্স: **৳{MIN_WITHDRAW:.2f}**\n"
+            f"• মিনিমাম রেফারেল: **{MIN_VALID_REFERS} জন**\n"
+        )
+        btn = [
+            [InlineKeyboardButton("💖 বিকাশ (bKash)", callback_data="withdraw_bKash"), InlineKeyboardButton("🟠 নগদ (Nagad)", callback_data="withdraw_Nagad")],
+            [InlineKeyboardButton("💜 রকেট (Rocket)" 
