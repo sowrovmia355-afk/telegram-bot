@@ -1,6 +1,127 @@
+from flask import Flask
+from threading import Thread
+
+# --- Render 24/7 Keep Alive Server ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is Alive 24/7!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+keep_alive()
+
+# --- Bot Code ---
+import logging
+import base64
+import hmac
+import hashlib
+import struct
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# ================= সেটআপ তথ্য =================
+BOT_TOKEN = "8610842156:AAF03CmhwZX4h16lDx_zODCLRuH_iCexf7o"
+
+ADMIN_ID = 8791376128                            # আপনার এডমিন আইডি
+ADMIN_USERNAME = "sowrov0134"                       # সাপোর্টের জন্য আপনার ইউজারনেম
+
+TELEGRAM_CHANNEL = "https://t.me/sowrov0134"
+OTP_BOT_LINK = "https://t.me/otp_bot_536"
+YOUTUBE_LINK = "https://youtube.com/@smearning2026?si=Txul4qaB4tS0-TkY"
+
+OTP_RATE = 0.20           # প্রতি ওটিপিতে ২০ পয়সা
+REFERRAL_BONUS = 10.0     # সফল রেফারে ১০ টাকা
+MIN_WITHDRAW = 120.0      # মিনিমাম উইথড্র ১২০ টাকা
+MIN_REFERRED_OTPS = 50    # যাকে রেফার করা হয়েছে তার মিনিমাম ওটিপি শর্ত
+MIN_VALID_REFERS = 3      # উইথড্র করার জন্য মিনিমাম সফল রেফার
+# ===============================================
+
+USER_WALLETS = {}
+VERIFIED_USERS = set()  # ভেরিফাই করা ইউজারদের মনে রাখার জন্য মেমোরি সেট
+
+def get_user_data(user_id):
+    if user_id not in USER_WALLETS:
+        USER_WALLETS[user_id] = {
+            "balance": 0.0,
+            "success_otps": 0,
+            "referred_by": None,
+            "valid_refers": 0,
+            "claimed_refers": set()
+        }
+    return USER_WALLETS[user_id]
+
+# 2FA (TOTP) জেনারেটর
+def generate_totp(secret):
+    try:
+        secret = secret.replace(" ", "").upper()
+        padding = 8 - (len(secret) % 8)
+        if padding < 8:
+            secret += "=" * padding
+        
+        key = base64.b32decode(secret)
+        import time
+        counter = int(time.time() // 30)
+        msg = struct.pack(">Q", counter)
+        digest = hmac.new(key, msg, hashlib.sha1).digest()
+        o = digest[19] & 15
+        code = (struct.unpack(">I", digest[o:o+4])[0] & 0x7fffffff) % 1000000
+        return f"{code:06d}"
+    except Exception:
+        return None
+
+# মূল মেনু
+async def show_main_menu(update_or_query, context, is_edit=False):
+    user_id = update_or_query.from_user.id if hasattr(update_or_query, 'from_user') else update_or_query.effective_user.id
+    
+    buttons = [
+        [InlineKeyboardButton("🔢 Get Number", callback_data="get_number")],
+        [InlineKeyboardButton("🔍 Search Number", callback_data="search_num"), InlineKeyboardButton("🚦 Live Traffic", callback_data="live_traffic")],
+        [InlineKeyboardButton("👥 Refer & Earn", callback_data="refer"), InlineKeyboardButton("👛 Wallet", callback_data="wallet")],
+        [InlineKeyboardButton("🔐 2FA Code Generator", callback_data="2fa_menu"), InlineKeyboardButton("💬 Online Support", callback_data="support")]
+    ]
+    
+    if user_id == ADMIN_ID:
+        buttons.append([InlineKeyboardButton("⚙️ Owner Admin Panel", callback_data="admin_panel")])
+
+    text = "👋 **আমাদের নাম্বার বটে স্বাগতম!**\n\nনিচের মেনু থেকে আপনার প্রয়োজনীয় সার্ভিসটি বেছে নিন:"
+    
+    if is_edit and hasattr(update_or_query, 'edit_message_text'):
+        await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    else:
+        if hasattr(update_or_query, 'message') and update_or_query.message:
+            await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        else:
+            await update_or_query.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+# /start কম্যান্ড
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user_data(user_id)
+    context.user_data.clear()
+    
+    if context.args and user_data["referred_by"] is None:
+        try:
+            referrer_id = int(context.args[0])
+            if referrer_id != user_id:
+                user_data["referred_by"] = referrer_id
         except ValueError:
             pass
 
+    # ইউজার ইতিমধ্যে ভেরিফাই করা থাকলে সরাসরি মেইন মেনু দেখাবে
+    if user_id in VERIFIED_USERS:
+        await show_main_menu(update, context, is_edit=False)
+        return
+
+    # প্রথমবার হলে চ্যানেল সাবস্ক্রাইব ও ভেরিফাই অপشن দেখাবে
     buttons = [
         [InlineKeyboardButton("📢 Telegram Channel", url=TELEGRAM_CHANNEL)],
         [InlineKeyboardButton("🤖 Telegram OTP Channel", url=OTP_BOT_LINK)],
@@ -23,6 +144,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_wallet = get_user_data(user_id)
 
     if data == "check_join":
+        VERIFIED_USERS.add(user_id)  # ইউজারের আইডি ভেরিফাইড লিস্টে সেভ হলো
         await query.answer("✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
         await show_main_menu(query, context, is_edit=True)
 
@@ -53,7 +175,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await context.bot.send_message(
                         chat_id=referrer_id,
-                        text=f"🎉 **অভিনন্দন!** আপনার রেফার করা ইউজার (`{user_id}`) ৫০টি ওটিপি সম্পন্ন করেছে।\n\n"
+                        text=f"🎉 **অভিনন্দন!** আপনার রেফার করা ইউজার (`{user_id}`) ৫০টি ওটিপি সম্পন্ন করেছে。\n\n"
                              f"💰 আপনার ওয়ালেটে **৳{REFERRAL_BONUS:.2f}** যোগ হয়েছে!",
                         parse_mode="Markdown"
                     )
@@ -271,3 +393,4 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot is running perfectly now...")
     app.run_polling()
+        
