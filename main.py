@@ -134,7 +134,6 @@ def get_total_users_count():
     conn.close()
     return count
 
-# স্থায়ী কিবোর্ড লেআউট
 def get_reply_keyboard():
     keyboard = [
         [KeyboardButton("🔢 Get Number"), KeyboardButton("👛 Wallet")],
@@ -143,7 +142,6 @@ def get_reply_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# 2FA (TOTP) জেনারেটর
 def generate_totp(secret):
     try:
         secret = secret.replace(" ", "").upper()
@@ -162,7 +160,6 @@ def generate_totp(secret):
     except Exception:
         return None
 
-# মূল মেনু
 async def show_main_menu(update_or_query, context, is_edit=False):
     user_id = update_or_query.from_user.id if hasattr(update_or_query, 'from_user') else update_or_query.effective_user.id
     
@@ -186,7 +183,6 @@ async def show_main_menu(update_or_query, context, is_edit=False):
         await target.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
         await target.reply_text("🔽 নিচ থেকেও শর্টকাট মেনু ব্যবহার করতে পারেন:", reply_markup=reply_kb)
 
-# /start কম্যান্ড
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = get_user_data(user_id)
@@ -217,7 +213,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# বাটন হ্যান্ডলার (ইনলাইন কলব্যাক)
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -404,7 +399,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await show_main_menu(query, context, is_edit=True)
 
-# টেক্সট মেসেজ এবং কিবোর্ড বাটন হ্যান্ডলার
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
@@ -436,4 +430,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💖 বিকাশ (bKash)", callback_data="withdraw_bKash"), InlineKeyboardButton("🟠 নগদ (Nagad)", callback_data="withdraw_Nagad")],
             [InlineKeyboardButton("💜 রকেট (Rocket)", callback_data="withdraw_Rocket"), InlineKeyboardButton("🟡 বাইনান্স (Binance)", callback_data="withdraw_Binance")]
         ]
-        await update.message.r
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(btn), parse_mode="Markdown")
+        return
+
+    elif text == "👥 Refer & Earn":
+        ref_link = f"h
