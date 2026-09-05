@@ -1,6 +1,13 @@
-               from flask import Flask
+from flask import Flask
 from threading import Thread
 import sqlite3
+import logging
+import base64
+import hmac
+import hashlib
+import struct
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # --- Render 24/7 Keep Alive Server ---
 app = Flask('')
@@ -19,14 +26,6 @@ def keep_alive():
 keep_alive()
 
 # --- Bot Code ---
-import logging
-import base64
-import hmac
-import hashlib
-import struct
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ================= সেটআপ তথ্য =================
@@ -135,7 +134,7 @@ def get_total_users_count():
     conn.close()
     return count
 
-# স্থায়ী কিবোর্ড লেআউট (যা নিচে বা মেনু আইকনে থাকবে)
+# স্থায়ী কিবোর্ড লেআউট
 def get_reply_keyboard():
     keyboard = [
         [KeyboardButton("🔢 Get Number"), KeyboardButton("👛 Wallet")],
@@ -163,7 +162,7 @@ def generate_totp(secret):
     except Exception:
         return None
 
-# মূল মেনু (ইনলাইন বাটন সহ)
+# মূল মেনু
 async def show_main_menu(update_or_query, context, is_edit=False):
     user_id = update_or_query.from_user.id if hasattr(update_or_query, 'from_user') else update_or_query.effective_user.id
     
@@ -178,7 +177,6 @@ async def show_main_menu(update_or_query, context, is_edit=False):
         buttons.append([InlineKeyboardButton("⚙️ Owner Admin Panel", callback_data="admin_panel")])
 
     text = "👋 **আমাদের নাম্বার বটে স্বাগতম!**\n\nনিচের মেনু থেকে আপনার প্রয়োজনীয় সার্ভিসটি বেছে নিন:"
-    
     reply_kb = get_reply_keyboard()
 
     if is_edit and hasattr(update_or_query, 'edit_message_text'):
@@ -186,7 +184,6 @@ async def show_main_menu(update_or_query, context, is_edit=False):
     else:
         target = update_or_query.message if hasattr(update_or_query, 'message') and update_or_query.message else update_or_query
         await target.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-        # সাথে নিচের পার্মানেন্ট কিবোর্ডটি পাঠিয়ে দেওয়া
         await target.reply_text("🔽 নিচ থেকেও শর্টকাট মেনু ব্যবহার করতে পারেন:", reply_markup=reply_kb)
 
 # /start কম্যান্ড
@@ -407,13 +404,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await show_main_menu(query, context, is_edit=True)
 
-# টেক্সট মেসেজ এবং নিচে থাকা কিবোর্ড বাটনগুলোর হ্যান্ডলার
+# টেক্সট মেসেজ এবং কিবোর্ড বাটন হ্যান্ডলার
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
     user_wallet = get_user_data(user_id)
     
-    # নিচ থেকে কিবোর্ডের কোনো বাটন চাপলে সেটার কাজ হ্যান্ডেল করা
+    state = context.user_data.get('state')
+
     if text == "🔢 Get Number":
         services = [
             [InlineKeyboardButton("📘 Facebook", callback_data="buy_fb"), InlineKeyboardButton("🟢 WhatsApp", callback_data="buy_wa")],
@@ -436,4 +434,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         btn = [
             [InlineKeyboardButton("💖 বিকাশ (bKash)", callback_data="withdraw_bKash"), InlineKeyboardButton("🟠 নগদ (Nagad)", callback_data="withdraw_Nagad")],
-            [InlineKeyboardButton("💜 রকেট (Rocket)" 
+            [InlineKeyboardButton("💜 রকেট (Rocket)", callback_data="withdraw_Rocket"), InlineKeyboardButton("🟡 বাইনান্স (Binance)", callback_data="withdraw_Binance")]
+        ]
+        await update.message.r
