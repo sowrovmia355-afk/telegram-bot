@@ -1,3 +1,23 @@
+from flask import Flask
+from threading import Thread
+
+# --- Render 24/7 Keep Alive Server ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is Alive 24/7!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+keep_alive()
+
+# --- Bot Code ---
 import logging
 import base64
 import hmac
@@ -12,10 +32,10 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 BOT_TOKEN = "8610842156:AAF03CmhwZX4h16lDx_zODCLRuH_iCexf7o"
 
 ADMIN_ID = 8791376128                            # আপনার এডমিন আইডি
-ADMIN_USERNAME = "sowrov016"                       # সাপোর্টের জন্য আপনার ইউজারনেম
+ADMIN_USERNAME = "sowrov0134"                       # সাপোর্টের জন্য আপনার ইউজারনেম (সংশোধিত)
 
-TELEGRAM_CHANNEL = "https://t.me/sowrov016"
-OTP_BOT_LINK = "https://t.me/sowrov536"
+TELEGRAM_CHANNEL = "https://t.me/sowrov0134"
+OTP_BOT_LINK = "https://t.me/otp_bot_536"
 YOUTUBE_LINK = "https://youtube.com/@smearning2026?si=Txul4qaB4tS0-TkY"
 
 OTP_RATE = 0.20           # প্রতি ওটিপিতে ২০ পয়সা
@@ -365,4 +385,3 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot is running perfectly now...")
     app.run_polling()
-  
