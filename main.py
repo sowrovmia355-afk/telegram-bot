@@ -438,4 +438,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"👥 রেফার এন্ড আর্ন প্রোগ্রাম\n\nলিংক:\n`{ref_link}`\n\n• প্রতি রেফার: ৳{REFERRAL_BONUS}\n• সফল রেফার: {wallet['valid_refers']} জন", parse_mode="Markdown")
         return
 
-    elif text == "🚦 Live Traffi
+    e    elif text == "Live Traffic":
+        await update.message.reply_text("Live Traffic: সকল সার্ভার ফুল স্পিডে সচল আছে!")
+        return
+
